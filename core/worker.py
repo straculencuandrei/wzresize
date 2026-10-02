@@ -48,6 +48,7 @@ class CompressionWorker(QThread):
         target_bytes: int,
         mode: str = "balanced",
         custom_output_dir: Optional[str] = None,
+        max_fps: Optional[float] = None,
         parent=None
     ):
         super().__init__(parent)
@@ -55,6 +56,7 @@ class CompressionWorker(QThread):
         self.target_bytes = target_bytes
         self.mode = mode
         self.custom_output_dir = custom_output_dir
+        self.max_fps = max_fps
         self._is_cancelled = False
 
         self.img_compressor: Optional[ImageCompressor] = None
@@ -142,6 +144,7 @@ class CompressionWorker(QThread):
                     output_path=output_path,
                     target_bytes=self.target_bytes,
                     mode=self.mode,
+                    max_fps=self.max_fps,
                 )
                 if self.is_cancelled():
                     self._emit_log("WARN", "Video processing was cancelled.")

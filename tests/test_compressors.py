@@ -128,6 +128,23 @@ class TestWZResizer(unittest.TestCase):
         final_size = os.path.getsize(out_video)
         self.assertLessEqual(final_size, target_bytes)
 
+    def test_06_video_compression_with_fps_limiter(self):
+        in_video = os.path.join(self.test_dir, "test_vid.mp4")
+        out_video_15fps = os.path.join(self.test_dir, "test_vid_15fps.mp4")
+
+        target_bytes = 160 * 1024
+        compressor = VideoCompressor()
+        result = compressor.compress(in_video, out_video_15fps, target_bytes, mode="balanced", max_fps=15.0)
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result.get("fps_limited"))
+        self.assertEqual(result.get("fps"), 15.0)
+        self.assertTrue(os.path.exists(out_video_15fps))
+
+        meta = probe_file(out_video_15fps)
+        self.assertAlmostEqual(meta["fps"], 15.0, delta=0.5)
+        self.assertLessEqual(os.path.getsize(out_video_15fps), target_bytes)
+
 
 if __name__ == "__main__":
     unittest.main()

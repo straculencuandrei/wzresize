@@ -88,7 +88,7 @@ QFrame#card QWidget {
 }
 
 /* Input Fields & Spinboxes */
-QLineEdit, QDoubleSpinBox, QComboBox {
+QLineEdit, QDoubleSpinBox, QSpinBox, QComboBox {
     background-color: #1e2128;
     border: 1px solid #374151;
     border-radius: 3px;
@@ -98,22 +98,24 @@ QLineEdit, QDoubleSpinBox, QComboBox {
     min-height: 20px;
 }
 
-QLineEdit:focus, QDoubleSpinBox:focus, QComboBox:focus {
+QLineEdit:focus, QDoubleSpinBox:focus, QSpinBox:focus, QComboBox:focus {
     border: 1px solid #0284c7;
     background-color: #242832;
 }
 
-QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {
+QDoubleSpinBox::up-button, QDoubleSpinBox::down-button,
+QSpinBox::up-button, QSpinBox::down-button {
     background-color: #2a2e38;
     border-left: 1px solid #374151;
     width: 20px;
 }
 
-QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover {
+QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover,
+QSpinBox::up-button:hover, QSpinBox::down-button:hover {
     background-color: #3b4252;
 }
 
-QDoubleSpinBox::up-arrow {
+QDoubleSpinBox::up-arrow, QSpinBox::up-arrow {
     image: none;
     border-left: 4px solid transparent;
     border-right: 4px solid transparent;
@@ -122,7 +124,7 @@ QDoubleSpinBox::up-arrow {
     height: 0;
 }
 
-QDoubleSpinBox::down-arrow {
+QDoubleSpinBox::down-arrow, QSpinBox::down-arrow {
     image: none;
     border-left: 4px solid transparent;
     border-right: 4px solid transparent;

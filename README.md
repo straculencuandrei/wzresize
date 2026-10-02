@@ -20,6 +20,10 @@ A complete, utilitarian, high-performance desktop application built with **Pytho
   - `Balanced`: Optimizes resolution and bitrate/quality to prevent macroblocking and visual compression artifacts.
   - `Preserve resolution`: Retains 100% of the original width and height, reducing only quality/bitrate.
   - `Scale resolution priority`: Prioritizes downscaling resolution to keep high bit density per pixel and crisp details.
+- **Video FPS Limiter:**
+  - Configurable maximum framerate (`No limit (Original)`, `60 FPS`, `50 FPS`, `30 FPS`, `25 FPS`, `24 FPS`, `15 FPS`, or `Custom...`).
+  - Caps high-framerate videos (e.g. 60 FPS -> 30 FPS) to allocate up to 2x more bitrate per individual frame, drastically boosting sharpness and clarity at tight target file sizes.
+  - Automatically disabled when an image file is loaded and active for video files with live source FPS display.
 - **Dedicated Activity Log (Log Channel / Console):**
   - Real-time auto-scrolling console output.
   - Color-coded event tags (`[INFO]`, `[SUCCESS]`, `[WARN]`, `[ERROR]`).
@@ -59,8 +63,11 @@ A complete, utilitarian, high-performance desktop application built with **Pytho
    - Calculates bits per pixel:
      $$\text{bpp} = \frac{\text{video\_bitrate} \times 1000}{\text{width} \times \text{height} \times \text{fps}}$$
    - If bpp falls below acceptable compression thresholds, FFmpeg automatically applies `-vf "scale=-2:height"` to optimal standard resolutions (1080p -> 720p -> 480p -> 360p -> 240p).
-5. **2-Pass Encoding:**
-   - Pass 1: Frame complexity analysis and log generation (`-pass 1 -an -f null`).
+5. **Framerate Limiting (Optional Cap):**
+   - When configured, applies FFmpeg `-vf "fps=fps=<max_fps>"` to cap high framerate inputs (e.g. 60 FPS -> 30 FPS).
+   - Recalculates effective bits per pixel with fewer frames, preserving higher bit density and detail without over-compressing individual frames.
+6. **2-Pass Encoding:**
+   - Pass 1: Frame complexity analysis and log generation (`-pass 1 -preset medium -an -f null`).
    - Pass 2: Final video compression and audio multiplexing (`-pass 2 -preset medium`).
    - Real-time progress monitoring parsed directly from FFmpeg stderr (`time=...`).
 

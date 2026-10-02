@@ -156,10 +156,12 @@ class VideoCompressor:
         input_path: str,
         output_path: str,
         target_bytes: int,
-        mode: str = "balanced"  # 'balanced', 'preserve_res', 'scale_res'
+        mode: str = "balanced",  # 'balanced', 'preserve_res', 'scale_res'
+        max_fps: Optional[float] = None
     ) -> Dict[str, Any]:
         """
         Executes 2-pass FFmpeg video compression to reach target_bytes.
+        Supports max_fps limit to conserve bitrate and enhance visual quality.
         """
         if self.is_cancelled():
             raise InterruptedError("Operation was cancelled by user.")
@@ -189,9 +191,22 @@ class VideoCompressor:
         if duration <= 0:
             raise ValueError(f"Could not determine video duration ({input_path}).")
 
+        # Framerate Limiter evaluation
+        effective_fps = fps
+        fps_filter_applied = False
+        if max_fps and max_fps > 0:
+            if fps > (max_fps + 0.1):
+                effective_fps = max_fps
+                fps_filter_applied = True
+                self.log("INFO", f"FPS Limiter active: Capping framerate from {fps:.1f} fps to {max_fps:.1f} fps")
+            else:
+                self.log("INFO", f"FPS Limiter: Source framerate ({fps:.1f} fps) is within limit ({max_fps:.1f} fps)")
+        else:
+            self.log("INFO", f"FPS Limiter: Disabled (retaining original {fps:.1f} fps)")
+
         self.log(
             "INFO",
-            f"Source video parameters: {orig_w}x{orig_h} @ {fps:.1f} fps | "
+            f"Source video parameters: {orig_w}x{orig_h} @ {fps:.1f} fps (effective: {effective_fps:.1f} fps) | "
             f"Duration: {format_duration(duration)} | Audio: {'Present' if has_audio else 'None'}"
         )
 
@@ -231,10 +246,13 @@ class VideoCompressor:
         )
 
         # Resolution scaling decision
-        target_h, reason = self._determine_target_resolution(orig_w, orig_h, fps, video_bitrate_kbps, mode)
+        target_h, reason = self._determine_target_resolution(orig_w, orig_h, effective_fps, video_bitrate_kbps, mode)
         self.log("INFO", f"Resolution decision: {reason}")
 
         video_filters = []
+        if fps_filter_applied:
+            video_filters.append(f"fps=fps={max_fps}")
+
         if target_h and orig_h > 0 and target_h < orig_h:
             # Scale video preserving aspect ratio, ensuring width is divisible by 2 for H.264
             video_filters.append(f"scale=-2:{target_h}")
@@ -271,6 +289,7 @@ class VideoCompressor:
                 "-b:v", f"{int(video_bitrate_kbps)}k",
                 "-pass", "1",
                 "-passlogfile", passlog_prefix,
+                "-preset", "medium",
                 "-an",
                 *vf_arg,
                 "-f", "null",
@@ -342,6 +361,8 @@ class VideoCompressor:
             "output_path": output_path,
             "duration": duration,
             "target_height": target_h,
+            "fps": effective_fps,
+            "fps_limited": fps_filter_applied,
             "video_bitrate_kbps": video_bitrate_kbps,
             "audio_bitrate_kbps": audio_bitrate_kbps,
             "saved_percentage": pct_saved,

@@ -86,6 +86,37 @@ class TestMainWindowUI(unittest.TestCase):
         self.assertEqual(self.win._slider_to_bytes(1), 1)
         self.assertEqual(self.win._slider_to_bytes(self.win.size_slider.maximum()), 3500000000)
 
+    def test_video_fps_limiter_ui(self):
+        # 1. Default state: No limit
+        self.assertEqual(self.win.fps_combo.currentText(), "No limit (Original)")
+        self.assertIsNone(self.win._get_selected_max_fps())
+        self.assertFalse(self.win.fps_spinbox.isEnabled())
+
+        # 2. Select preset: 30 FPS
+        self.win.fps_combo.setCurrentText("30 FPS")
+        self.assertEqual(self.win._get_selected_max_fps(), 30.0)
+        self.assertEqual(self.win.fps_spinbox.value(), 30)
+        self.assertFalse(self.win.fps_spinbox.isEnabled())
+
+        # 3. Select Custom: spinbox enables
+        self.win.fps_combo.setCurrentText("Custom...")
+        self.assertTrue(self.win.fps_spinbox.isEnabled())
+        self.win.fps_spinbox.setValue(45)
+        self.assertEqual(self.win._get_selected_max_fps(), 45.0)
+
+        # 4. When an image file is loaded, FPS controls are disabled
+        img_meta = {"size_bytes": 100000, "type": "IMAGE", "format": "JPG", "width": 800, "height": 600}
+        self.win._on_file_selected("sample.jpg", img_meta)
+        self.assertFalse(self.win.fps_combo.isEnabled())
+        self.assertFalse(self.win.fps_spinbox.isEnabled())
+        self.assertEqual(self.win.fps_info_label.text(), "(Not applicable for images)")
+
+        # 5. When a video file is loaded, FPS controls are enabled and source fps displayed
+        vid_meta = {"size_bytes": 1000000, "type": "VIDEO", "duration": 10.0, "width": 1920, "height": 1080, "fps": 60.0}
+        self.win._on_file_selected("sample.mp4", vid_meta)
+        self.assertTrue(self.win.fps_combo.isEnabled())
+        self.assertIn("60.0 fps", self.win.fps_info_label.text())
+
     def test_open_buttons_state(self):
         self.assertFalse(self.win.open_file_btn.isEnabled())
         self.assertFalse(self.win.open_folder_btn.isEnabled())

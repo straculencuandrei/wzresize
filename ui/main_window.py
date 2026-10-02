@@ -12,7 +12,7 @@ from PyQt6.QtCore import Qt, QSize, QUrl
 from PyQt6.QtGui import QIcon, QKeySequence, QShortcut, QDesktopServices
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QDoubleSpinBox, QComboBox,
+    QLabel, QPushButton, QDoubleSpinBox, QSpinBox, QComboBox,
     QRadioButton, QButtonGroup, QProgressBar, QSplitter,
     QFileDialog, QLineEdit, QFrame, QMessageBox, QApplication,
     QSlider
@@ -191,6 +191,49 @@ class MainWindow(QMainWindow):
         mode_row.addWidget(self.radio_scale)
         mode_row.addStretch()
         settings_layout.addLayout(mode_row)
+
+        # Video FPS Limiter Row
+        fps_row = QHBoxLayout()
+        fps_row.setSpacing(10)
+
+        fps_lbl = QLabel("Video FPS Limit:")
+        fps_lbl.setObjectName("sectionTitle")
+        fps_lbl.setFixedWidth(150)
+
+        self.fps_combo = QComboBox()
+        self.fps_combo.addItems([
+            "No limit (Original)",
+            "60 FPS",
+            "50 FPS",
+            "30 FPS",
+            "25 FPS",
+            "24 FPS",
+            "15 FPS",
+            "Custom..."
+        ])
+        self.fps_combo.setCurrentText("No limit (Original)")
+        self.fps_combo.setFixedWidth(160)
+        self.fps_combo.setToolTip("Limit maximum video framerate to conserve bitrate and enhance visual quality")
+        self.fps_combo.currentTextChanged.connect(self._on_fps_mode_changed)
+
+        self.fps_spinbox = QSpinBox()
+        self.fps_spinbox.setRange(1, 240)
+        self.fps_spinbox.setValue(30)
+        self.fps_spinbox.setSuffix(" fps")
+        self.fps_spinbox.setFixedWidth(90)
+        self.fps_spinbox.setEnabled(False)
+        self.fps_spinbox.setToolTip("Enter custom maximum framerate (1 to 240 fps)")
+        self.fps_spinbox.valueChanged.connect(self._on_fps_spinbox_changed)
+
+        self.fps_info_label = QLabel("(Applies to video)")
+        self.fps_info_label.setObjectName("fileDetailLabel")
+
+        fps_row.addWidget(fps_lbl)
+        fps_row.addWidget(self.fps_combo)
+        fps_row.addWidget(self.fps_spinbox)
+        fps_row.addWidget(self.fps_info_label)
+        fps_row.addStretch()
+        settings_layout.addLayout(fps_row)
 
         # Destination Folder Row
         dest_row = QHBoxLayout()
@@ -454,6 +497,45 @@ class MainWindow(QMainWindow):
         if folder:
             self.dest_path_edit.setText(folder)
 
+    def _on_fps_mode_changed(self, text: str):
+        is_custom = (text == "Custom...")
+        self.fps_spinbox.setEnabled(is_custom)
+        if not is_custom:
+            val = self._parse_fps_value(text)
+            if val is not None:
+                self.fps_spinbox.blockSignals(True)
+                self.fps_spinbox.setValue(int(val))
+                self.fps_spinbox.blockSignals(False)
+
+    def _on_fps_spinbox_changed(self, val: int):
+        if self.fps_combo.currentText() != "Custom...":
+            self.fps_combo.blockSignals(True)
+            self.fps_combo.setCurrentText("Custom...")
+            self.fps_combo.blockSignals(False)
+
+    def _parse_fps_value(self, text: str) -> Optional[float]:
+        if "60" in text:
+            return 60.0
+        elif "50" in text:
+            return 50.0
+        elif "30" in text:
+            return 30.0
+        elif "25" in text:
+            return 25.0
+        elif "24" in text:
+            return 24.0
+        elif "15" in text:
+            return 15.0
+        elif text == "Custom...":
+            return float(self.fps_spinbox.value())
+        return None
+
+    def _get_selected_max_fps(self) -> Optional[float]:
+        text = self.fps_combo.currentText()
+        if text == "Custom...":
+            return float(self.fps_spinbox.value())
+        return self._parse_fps_value(text)
+
     def _on_file_selected(self, file_path: str, meta: Dict[str, Any]):
         self.current_file_path = file_path
         self.current_meta = meta
@@ -503,9 +585,16 @@ class MainWindow(QMainWindow):
             dur = meta.get("duration", 0.0)
             res = f"{meta.get('width', 0)}x{meta.get('height', 0)}"
             fps = meta.get("fps", 0.0)
+            self.fps_combo.setEnabled(True)
+            if self.fps_combo.currentText() == "Custom...":
+                self.fps_spinbox.setEnabled(True)
+            self.fps_info_label.setText(f"(Source: {fps:.1f} fps)")
             self.log_widget.append_log("INFO", f"Video details: Resolution {res}, {fps:.1f} fps, duration {dur:.2f}s")
         elif m_type == "IMAGE":
             res = f"{meta.get('width', 0)}x{meta.get('height', 0)}"
+            self.fps_combo.setEnabled(False)
+            self.fps_spinbox.setEnabled(False)
+            self.fps_info_label.setText("(Not applicable for images)")
             self.log_widget.append_log("INFO", f"Image details: Resolution {res}, format {meta.get('format', '')}")
 
     def _calculate_target_bytes(self) -> int:
@@ -541,6 +630,7 @@ class MainWindow(QMainWindow):
             return
 
         mode = self._get_selected_mode()
+        max_fps = self._get_selected_max_fps()
         custom_dir = self.dest_path_edit.text().strip() if self.dest_custom_radio.isChecked() else None
 
         if custom_dir and not os.path.isdir(custom_dir):
@@ -554,6 +644,8 @@ class MainWindow(QMainWindow):
         self.open_file_btn.setEnabled(False)
         self.open_folder_btn.setEnabled(False)
         self.drop_area.setEnabled(False)
+        self.fps_combo.setEnabled(False)
+        self.fps_spinbox.setEnabled(False)
         self.progress_bar.setValue(0)
         self.progress_label.setText("Starting processing...")
 
@@ -563,6 +655,7 @@ class MainWindow(QMainWindow):
             target_bytes=target_bytes,
             mode=mode,
             custom_output_dir=custom_dir,
+            max_fps=max_fps,
             parent=self
         )
 
@@ -652,7 +745,8 @@ class MainWindow(QMainWindow):
             else:
                 f_size = format_size(result.get("final_size", 0))
                 saved_pct = result.get("saved_percentage", 0.0)
-                self.log_widget.append_log("SUCCESS", f"Operation completed successfully! Output: {out_path} ({f_size}, -{saved_pct:.1f}%)")
+                fps_info = f", {result['fps']:.1f} fps" if "fps" in result else ""
+                self.log_widget.append_log("SUCCESS", f"Operation completed successfully! Output: {out_path} ({f_size}, -{saved_pct:.1f}%{fps_info})")
 
     def _on_worker_error(self, error_message: str, error_code: int):
         self._reset_ui_state()
@@ -667,6 +761,12 @@ class MainWindow(QMainWindow):
         has_file = bool(self.last_output_path and os.path.exists(self.last_output_path))
         self.open_file_btn.setEnabled(has_file)
         self.open_folder_btn.setEnabled(has_file)
+        is_image = bool(self.current_meta and self.current_meta.get("type", "").upper() == "IMAGE")
+        self.fps_combo.setEnabled(not is_image)
+        if not is_image and self.fps_combo.currentText() == "Custom...":
+            self.fps_spinbox.setEnabled(True)
+        else:
+            self.fps_spinbox.setEnabled(False)
 
     def closeEvent(self, event):
         """Ensures worker thread and active FFmpeg processes are cleanly terminated on exit."""
