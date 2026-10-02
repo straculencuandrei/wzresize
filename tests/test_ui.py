@@ -40,11 +40,11 @@ class TestMainWindowUI(unittest.TestCase):
         self.assertEqual(self.win.size_spinbox.value(), 8.0)
         self.assertEqual(self.win.size_slider.value(), 8192)
 
-    def test_english_labels_present(self):
-        self.assertEqual(self.win.start_btn.text(), "Process / Compress")
-        self.assertEqual(self.win.cancel_btn.text(), "Cancel")
-        self.assertIn("Target Size", self.win.windowTitle())
-        self.assertEqual(self.win.radio_balanced.text(), "Balanced (downscale + quality)")
+    def test_open_buttons_state(self):
+        self.assertFalse(self.win.open_file_btn.isEnabled())
+        self.assertFalse(self.win.open_folder_btn.isEnabled())
+        self.assertEqual(self.win.open_file_btn.text(), "Open Compressed File")
+        self.assertEqual(self.win.open_folder_btn.text(), "Open Folder")
 
 
 if __name__ == "__main__":

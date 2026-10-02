@@ -252,6 +252,31 @@ QPushButton#cancelButton:pressed {
     background-color: #351313;
 }
 
+/* Success Button (Open File) */
+QPushButton#successButton {
+    background-color: #065f46;
+    border: 1px solid #059669;
+    color: #a7f3d0;
+    font-weight: 600;
+    padding: 8px 16px;
+    border-radius: 4px;
+}
+
+QPushButton#successButton:hover {
+    background-color: #047857;
+    color: #ffffff;
+}
+
+QPushButton#successButton:pressed {
+    background-color: #064e3b;
+}
+
+QPushButton#successButton:disabled {
+    background-color: #16181d;
+    border-color: #262a33;
+    color: #4b5563;
+}
+
 /* Preset Buttons */
 QPushButton#presetButton {
     background-color: #1c1f26;

@@ -30,6 +30,7 @@ A complete, utilitarian, high-performance desktop application built with **Pytho
 - **Zero Overwriting:** The original file is NEVER overwritten.
 - **Automatic Unique Naming:** Automatically creates an output file with `_compressed` suffix (e.g. `name_compressed.mp4` or `name_compressed(1).mp4` if one exists).
 - **Custom Export Destination:** Option to save alongside the source file or specify a custom destination directory.
+- **Quick Access Actions:** Dedicated `Open Compressed File` button to immediately launch the output file in the system default media player/viewer, and `Open Folder` button to reveal and highlight the compressed file in the file explorer.
 - **Asynchronous Execution:** Runs on a dedicated background thread (`QThread`), keeping the UI fluid and responsive throughout the compression.
 - **Cancel Button & Shortcut:** Safely terminates any active FFmpeg processes and cleans up temporary files without leaving orphaned tasks.
 

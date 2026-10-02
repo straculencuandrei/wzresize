@@ -5,9 +5,11 @@ English localization throughout the entire application.
 """
 
 import os
+import sys
+import subprocess
 from typing import Optional, Dict, Any
-from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QIcon, QKeySequence, QShortcut
+from PyQt6.QtCore import Qt, QSize, QUrl
+from PyQt6.QtGui import QIcon, QKeySequence, QShortcut, QDesktopServices
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QDoubleSpinBox, QComboBox,
@@ -32,6 +34,7 @@ class MainWindow(QMainWindow):
         self.current_file_path: Optional[str] = None
         self.current_meta: Optional[Dict[str, Any]] = None
         self.worker: Optional[CompressionWorker] = None
+        self.last_output_path: Optional[str] = None
         self._syncing_size = False
 
         self._init_ui()
@@ -213,11 +216,16 @@ class MainWindow(QMainWindow):
         self.browse_dest_btn.setEnabled(False)
         self.browse_dest_btn.clicked.connect(self._choose_custom_dest)
 
+        self.open_dest_btn = QPushButton("Open Destination")
+        self.open_dest_btn.setToolTip("Open destination directory in file explorer")
+        self.open_dest_btn.clicked.connect(self.open_destination_folder)
+
         dest_row.addWidget(dest_lbl)
         dest_row.addWidget(self.dest_default_radio)
         dest_row.addWidget(self.dest_custom_radio)
         dest_row.addWidget(self.dest_path_edit, stretch=1)
         dest_row.addWidget(self.browse_dest_btn)
+        dest_row.addWidget(self.open_dest_btn)
         settings_layout.addLayout(dest_row)
 
         controls_layout.addWidget(settings_frame)
@@ -229,7 +237,7 @@ class MainWindow(QMainWindow):
         self.start_btn = QPushButton("Process / Compress")
         self.start_btn.setObjectName("actionButton")
         self.start_btn.setMinimumHeight(38)
-        self.start_btn.setMinimumWidth(220)
+        self.start_btn.setMinimumWidth(180)
         self.start_btn.clicked.connect(self.start_compression)
 
         self.cancel_btn = QPushButton("Cancel")
@@ -238,8 +246,23 @@ class MainWindow(QMainWindow):
         self.cancel_btn.setEnabled(False)
         self.cancel_btn.clicked.connect(self.cancel_compression)
 
+        self.open_file_btn = QPushButton("Open Compressed File")
+        self.open_file_btn.setObjectName("successButton")
+        self.open_file_btn.setMinimumHeight(38)
+        self.open_file_btn.setEnabled(False)
+        self.open_file_btn.setToolTip("Open the compressed file with default media viewer")
+        self.open_file_btn.clicked.connect(self.open_compressed_file)
+
+        self.open_folder_btn = QPushButton("Open Folder")
+        self.open_folder_btn.setMinimumHeight(38)
+        self.open_folder_btn.setEnabled(False)
+        self.open_folder_btn.setToolTip("Open destination directory and highlight compressed file")
+        self.open_folder_btn.clicked.connect(self.open_destination_folder)
+
         action_box.addWidget(self.start_btn)
         action_box.addWidget(self.cancel_btn)
+        action_box.addWidget(self.open_file_btn)
+        action_box.addWidget(self.open_folder_btn)
 
         # Progress bar and status indicator
         prog_layout = QVBoxLayout()
@@ -430,6 +453,8 @@ class MainWindow(QMainWindow):
         # Prepare UI for processing state
         self.start_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
+        self.open_file_btn.setEnabled(False)
+        self.open_folder_btn.setEnabled(False)
         self.drop_area.setEnabled(False)
         self.progress_bar.setValue(0)
         self.progress_label.setText("Starting processing...")
@@ -458,6 +483,57 @@ class MainWindow(QMainWindow):
             self.worker.cancel()
             self.cancel_btn.setEnabled(False)
 
+    def open_compressed_file(self):
+        """Opens the last compressed file with the default OS application."""
+        if not self.last_output_path or not os.path.exists(self.last_output_path):
+            self.log_widget.append_log("WARN", "No compressed file is currently available to open.")
+            return
+
+        try:
+            abs_path = os.path.abspath(self.last_output_path)
+            self.log_widget.append_log("INFO", f"Opening compressed file: {abs_path}")
+            if sys.platform == "win32":
+                os.startfile(abs_path)
+            else:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(abs_path))
+        except Exception as e:
+            self.log_widget.append_log("ERROR", f"Failed to open file: {e}")
+
+    def open_destination_folder(self):
+        """Opens the destination folder and highlights the compressed file if present."""
+        target_path = self.last_output_path if (self.last_output_path and os.path.exists(self.last_output_path)) else None
+
+        if not target_path:
+            # Check if custom folder is selected
+            if self.dest_custom_radio.isChecked() and self.dest_path_edit.text().strip():
+                custom_dir = self.dest_path_edit.text().strip()
+                if os.path.isdir(custom_dir):
+                    target_dir = os.path.abspath(custom_dir)
+                    self.log_widget.append_log("INFO", f"Opening destination folder: {target_dir}")
+                    QDesktopServices.openUrl(QUrl.fromLocalFile(target_dir))
+                    return
+            # Or use current file's directory
+            if self.current_file_path and os.path.exists(self.current_file_path):
+                target_dir = os.path.dirname(os.path.abspath(self.current_file_path))
+                self.log_widget.append_log("INFO", f"Opening source folder: {target_dir}")
+                QDesktopServices.openUrl(QUrl.fromLocalFile(target_dir))
+                return
+
+            self.log_widget.append_log("WARN", "No destination directory available to open.")
+            return
+
+        try:
+            abs_file = os.path.abspath(target_path)
+            folder = os.path.dirname(abs_file)
+            self.log_widget.append_log("INFO", f"Opening destination folder: {folder}")
+            if sys.platform == "win32":
+                # Opens folder and selects the file in Windows Explorer
+                subprocess.Popen(f'explorer /select,"{abs_file}"')
+            else:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+        except Exception as e:
+            self.log_widget.append_log("ERROR", f"Failed to open destination folder: {e}")
+
     def _on_worker_progress(self, pct: int, status: str):
         self.progress_bar.setValue(pct)
         self.progress_label.setText(status)
@@ -467,10 +543,15 @@ class MainWindow(QMainWindow):
         if success:
             self.progress_bar.setValue(100)
             self.progress_label.setText("Completed!")
+            out_path = result.get("output_path", "")
+            if out_path and os.path.exists(out_path):
+                self.last_output_path = out_path
+                self.open_file_btn.setEnabled(True)
+                self.open_folder_btn.setEnabled(True)
+
             if result.get("already_smaller"):
                 self.log_widget.append_log("INFO", "File already meets the target size constraint. No copy generated.")
             else:
-                out_path = result.get("output_path", "")
                 f_size = format_size(result.get("final_size", 0))
                 saved_pct = result.get("saved_percentage", 0.0)
                 self.log_widget.append_log("SUCCESS", f"Operation completed successfully! Output: {out_path} ({f_size}, -{saved_pct:.1f}%)")
@@ -485,6 +566,9 @@ class MainWindow(QMainWindow):
         self.start_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         self.drop_area.setEnabled(True)
+        has_file = bool(self.last_output_path and os.path.exists(self.last_output_path))
+        self.open_file_btn.setEnabled(has_file)
+        self.open_folder_btn.setEnabled(has_file)
 
     def closeEvent(self, event):
         """Ensures worker thread and active FFmpeg processes are cleanly terminated on exit."""
