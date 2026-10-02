@@ -1,6 +1,6 @@
 # WZ Resizer — Target Size Compressor
 
-A complete, utilitarian, high-performance desktop application built with **Python**, **PyQt6**, **Pillow**, and **FFmpeg**. Enables automated resizing and compression of images and video files down to an exact specified target file size in **MB** or **KB** (e.g., *"bring the file under 15 MB"* or *"compress to 8 MB for Discord"*).
+A complete, utilitarian, high-performance desktop application built with **Python**, **PyQt6**, **Pillow**, and **FFmpeg**. Enables automated resizing and compression of images and video files down to an exact specified target file size in **MB**, **KB**, or **B** (minimum **1 Byte**) (e.g., *"bring the file under 15 MB"* or *"compress to 8 MB for Discord"*).
 
 ---
 
@@ -12,8 +12,8 @@ A complete, utilitarian, high-performance desktop application built with **Pytho
 - **Elastic & Resizable Layout:** Fully resizable window utilizing responsive Qt containers (`QSplitter`, `QBoxLayout`, stretch factors) adapting smoothly to any screen resolution.
 - **File Picker & Drag-and-Drop:** Drag and drop files directly onto the interactive drop zone or select via system file dialog.
 - **Dual Size Control (Slider + Precise Input):**
-  - **Dynamic Size Slider:** Ranging smoothly from maximum (original file size) down towards zero. Automatically synchronizes in real time.
-  - **Numeric Spinbox & Unit Selector:** For precise dimensions (e.g. `14.85 MB`) that cannot be touched easily with the slider.
+  - **Dynamic Size Slider:** Ranging smoothly from maximum (original file size) down to a minimum of **1 Byte (1 B)**. Automatically synchronizes in real time.
+  - **Numeric Spinbox & Unit Selector:** Supports **MB**, **KB**, and **B** units down to **1 Byte** for precise dimensions (e.g. `14.85 MB`, `500 KB`, or `1 B`) that cannot be touched easily with the slider.
   - **Percentage & Ratio Indicator:** Live feedback displaying target size and percentage of original file.
 - **Quick Presets:** One-click presets for common limits: `8 MB (Discord)`, `15 MB`, `25 MB (Email)`, `50 MB`, `100 MB`.
 - **Mode Selection:**

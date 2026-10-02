@@ -102,16 +102,17 @@ class MainWindow(QMainWindow):
         target_lbl.setObjectName("sectionTitle")
         target_lbl.setFixedWidth(150)
 
+        self._max_file_bytes = 100 * 1024 * 1024  # 100 MB default max before file loaded
         self.size_spinbox = QDoubleSpinBox()
-        self.size_spinbox.setRange(0.01, 999999.0)
+        self.size_spinbox.setRange(0.000001, 999999.0)
         self.size_spinbox.setDecimals(2)
         self.size_spinbox.setValue(15.0)  # Default 15 MB
         self.size_spinbox.setFixedWidth(110)
-        self.size_spinbox.setToolTip("Input precise desired size if slider is not exact enough")
+        self.size_spinbox.setToolTip("Input precise desired size if slider is not exact enough (minimum 1 B)")
         self.size_spinbox.valueChanged.connect(self._on_spinbox_changed)
 
         self.unit_combo = QComboBox()
-        self.unit_combo.addItems(["MB", "KB"])
+        self.unit_combo.addItems(["MB", "KB", "B"])
         self.unit_combo.setCurrentText("MB")
         self.unit_combo.setFixedWidth(70)
         self.unit_combo.currentTextChanged.connect(self._on_unit_changed)
@@ -138,7 +139,7 @@ class MainWindow(QMainWindow):
         target_row.addStretch()
         settings_layout.addLayout(target_row)
 
-        # Target Size Slider Row (Max: Original Size down to close to 0)
+        # Target Size Slider Row (Max: Original Size down to 1 Byte)
         slider_row = QHBoxLayout()
         slider_row.setSpacing(10)
 
@@ -147,9 +148,9 @@ class MainWindow(QMainWindow):
         slider_lbl.setFixedWidth(150)
 
         self.size_slider = QSlider(Qt.Orientation.Horizontal)
-        self.size_slider.setRange(100, 102400)  # Initial default 100 KB to 100 MB
-        self.size_slider.setValue(15360)       # 15 MB default
-        self.size_slider.setToolTip("Adjust target size smoothly from maximum (original size) down towards zero")
+        self.size_slider.setRange(1, self._max_file_bytes)  # Minimum is 1 Byte
+        self.size_slider.setValue(15 * 1024 * 1024)         # 15 MB default
+        self.size_slider.setToolTip("Adjust target size smoothly from maximum (original size) down to 1 Byte")
         self.size_slider.valueChanged.connect(self._on_slider_changed)
 
         self.slider_info_label = QLabel("15.00 MB")
@@ -305,15 +306,76 @@ class MainWindow(QMainWindow):
         self.log_widget.append_log("INFO", "System initialized. Ready for image and video processing.")
         self.log_widget.append_log("INFO", "Drag and drop a file into the area above or click 'Select File...'.")
 
-    def _on_slider_changed(self, value_kb: int):
+    def _get_max_bytes(self) -> int:
+        if self.current_meta and "size_bytes" in self.current_meta and self.current_meta["size_bytes"] > 0:
+            return max(1, int(self.current_meta["size_bytes"]))
+        return getattr(self, "_max_file_bytes", 100 * 1024 * 1024)
+
+    def _setup_slider_range(self):
+        max_b = self._get_max_bytes()
+        if max_b <= 2_000_000_000:
+            self.size_slider.setRange(1, max_b)
+        else:
+            self.size_slider.setRange(1, 1_000_000)
+
+    def _slider_to_bytes(self, slider_val: int) -> int:
+        max_b = self._get_max_bytes()
+        if max_b <= 1:
+            return 1
+        if max_b <= 2_000_000_000:
+            return max(1, min(max_b, slider_val))
+        else:
+            if slider_val <= 1:
+                return 1
+            ratio = (slider_val - 1) / (1_000_000.0 - 1.0)
+            target = 1 + int(round(ratio * (max_b - 1)))
+            return max(1, min(max_b, target))
+
+    def _bytes_to_slider(self, bytes_val: int) -> int:
+        max_b = self._get_max_bytes()
+        if max_b <= 1:
+            return 1
+        if max_b <= 2_000_000_000:
+            return max(1, min(max_b, bytes_val))
+        else:
+            if bytes_val <= 1:
+                return 1
+            ratio = (bytes_val - 1) / float(max_b - 1)
+            pos = 1 + int(round(ratio * (1_000_000 - 1)))
+            return max(1, min(1_000_000, pos))
+
+    def _apply_unit_settings(self, unit: str):
+        unit = unit.upper()
+        if unit == "B":
+            self.size_spinbox.setRange(1.0, 999999999999.0)
+            self.size_spinbox.setDecimals(0)
+            self.size_spinbox.setSingleStep(1.0)
+        elif unit == "KB":
+            self.size_spinbox.setRange(0.001, 999999999.0)
+            self.size_spinbox.setDecimals(2)
+            self.size_spinbox.setSingleStep(1.0)
+        else:  # "MB"
+            self.size_spinbox.setRange(0.000001, 999999.0)
+            self.size_spinbox.setDecimals(2)
+            self.size_spinbox.setSingleStep(0.1)
+
+    def _on_slider_changed(self, slider_val: int):
         if self._syncing_size:
             return
         self._syncing_size = True
+        target_bytes = self._slider_to_bytes(slider_val)
         unit = self.unit_combo.currentText().upper()
         if unit == "MB":
-            self.size_spinbox.setValue(round(value_kb / 1024.0, 2))
-        else:
-            self.size_spinbox.setValue(float(value_kb))
+            val = target_bytes / (1024.0 * 1024.0)
+            self.size_spinbox.setDecimals(4 if val < 0.01 else 2)
+            self.size_spinbox.setValue(round(val, 4 if val < 0.01 else 2))
+        elif unit == "KB":
+            val = target_bytes / 1024.0
+            self.size_spinbox.setDecimals(3 if val < 0.1 else 2)
+            self.size_spinbox.setValue(round(val, 3 if val < 0.1 else 2))
+        else:  # "B"
+            self.size_spinbox.setDecimals(0)
+            self.size_spinbox.setValue(float(target_bytes))
         self._update_slider_label()
         self._syncing_size = False
 
@@ -322,9 +384,15 @@ class MainWindow(QMainWindow):
             return
         self._syncing_size = True
         unit = self.unit_combo.currentText().upper()
-        kb_val = int(round(val * 1024)) if unit == "MB" else int(round(val))
-        kb_clamped = max(self.size_slider.minimum(), min(self.size_slider.maximum(), kb_val))
-        self.size_slider.setValue(kb_clamped)
+        if unit == "MB":
+            target_bytes = int(round(val * 1024 * 1024))
+        elif unit == "KB":
+            target_bytes = int(round(val * 1024))
+        else:  # "B"
+            target_bytes = int(round(val))
+        target_bytes = max(1, target_bytes)
+        slider_val = self._bytes_to_slider(target_bytes)
+        self.size_slider.setValue(slider_val)
         self._update_slider_label()
         self._syncing_size = False
 
@@ -332,30 +400,46 @@ class MainWindow(QMainWindow):
         if self._syncing_size:
             return
         self._syncing_size = True
-        kb_val = self.size_slider.value()
-        if new_unit.upper() == "MB":
-            self.size_spinbox.setValue(round(kb_val / 1024.0, 2))
-        else:
-            self.size_spinbox.setValue(float(kb_val))
+        unit = new_unit.upper()
+        self._apply_unit_settings(unit)
+        target_bytes = self._slider_to_bytes(self.size_slider.value())
+        if unit == "MB":
+            val = target_bytes / (1024.0 * 1024.0)
+            self.size_spinbox.setDecimals(4 if val < 0.01 else 2)
+            self.size_spinbox.setValue(round(val, 4 if val < 0.01 else 2))
+        elif unit == "KB":
+            val = target_bytes / 1024.0
+            self.size_spinbox.setDecimals(3 if val < 0.1 else 2)
+            self.size_spinbox.setValue(round(val, 3 if val < 0.1 else 2))
+        else:  # "B"
+            self.size_spinbox.setDecimals(0)
+            self.size_spinbox.setValue(float(target_bytes))
         self._update_slider_label()
         self._syncing_size = False
 
     def _update_slider_label(self):
-        kb_val = self.size_slider.value()
-        if self.current_meta and "size_bytes" in self.current_meta:
-            orig_kb = max(1, int(self.current_meta["size_bytes"] / 1024))
-            pct = min(100.0, (kb_val / orig_kb) * 100.0)
-            self.slider_info_label.setText(f"{format_size(kb_val * 1024)} ({pct:.1f}% of orig)")
+        target_bytes = self._slider_to_bytes(self.size_slider.value())
+        if self.current_meta and "size_bytes" in self.current_meta and self.current_meta["size_bytes"] > 0:
+            orig_bytes = self.current_meta["size_bytes"]
+            pct = min(100.0, (target_bytes / orig_bytes) * 100.0)
+            self.slider_info_label.setText(f"{format_size(target_bytes)} ({pct:.1f}% of orig)")
         else:
-            self.slider_info_label.setText(f"{format_size(kb_val * 1024)}")
+            self.slider_info_label.setText(f"{format_size(target_bytes)}")
 
     def _apply_preset(self, val: float, unit: str):
         self._syncing_size = True
         self.unit_combo.setCurrentText(unit)
+        self._apply_unit_settings(unit)
         self.size_spinbox.setValue(val)
-        kb_val = int(val * 1024) if unit == "MB" else int(val)
-        kb_clamped = max(self.size_slider.minimum(), min(self.size_slider.maximum(), kb_val))
-        self.size_slider.setValue(kb_clamped)
+        if unit == "MB":
+            target_bytes = int(val * 1024 * 1024)
+        elif unit == "KB":
+            target_bytes = int(val * 1024)
+        else:
+            target_bytes = int(val)
+        target_bytes = max(1, target_bytes)
+        slider_val = self._bytes_to_slider(target_bytes)
+        self.size_slider.setValue(slider_val)
         self._syncing_size = False
         self._update_slider_label()
         self.log_widget.append_log("INFO", f"Preset selected: {val:.1f} {unit}")
@@ -376,26 +460,36 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.progress_label.setText(f"Ready: {os.path.basename(file_path)}")
 
-        orig_bytes = meta.get("size_bytes", 0)
-        orig_kb = max(1, int(orig_bytes / 1024))
+        orig_bytes = max(1, meta.get("size_bytes", 1))
+        self._max_file_bytes = orig_bytes
 
-        # Dynamically set slider range: from 1 KB up to original file size
+        # Dynamically set slider range: from 1 Byte up to original file size
         self._syncing_size = True
-        self.size_slider.setMinimum(1)
-        self.size_slider.setMaximum(orig_kb)
+        self._setup_slider_range()
 
         # Set default target to 50% of original file or current target if already smaller
         curr_target_bytes = self._calculate_target_bytes()
         if curr_target_bytes >= orig_bytes:
-            new_kb = max(1, int(orig_kb * 0.5))
-            self.size_slider.setValue(new_kb)
-            if self.unit_combo.currentText() == "MB":
-                self.size_spinbox.setValue(round(new_kb / 1024.0, 2))
-            else:
-                self.size_spinbox.setValue(float(new_kb))
+            new_target_bytes = max(1, int(orig_bytes * 0.5))
         else:
-            target_kb = max(1, int(curr_target_bytes / 1024))
-            self.size_slider.setValue(min(orig_kb, target_kb))
+            new_target_bytes = max(1, curr_target_bytes)
+
+        slider_val = self._bytes_to_slider(new_target_bytes)
+        self.size_slider.setValue(slider_val)
+
+        unit = self.unit_combo.currentText().upper()
+        self._apply_unit_settings(unit)
+        if unit == "MB":
+            val = new_target_bytes / (1024.0 * 1024.0)
+            self.size_spinbox.setDecimals(4 if val < 0.01 else 2)
+            self.size_spinbox.setValue(round(val, 4 if val < 0.01 else 2))
+        elif unit == "KB":
+            val = new_target_bytes / 1024.0
+            self.size_spinbox.setDecimals(3 if val < 0.1 else 2)
+            self.size_spinbox.setValue(round(val, 3 if val < 0.1 else 2))
+        else:  # "B"
+            self.size_spinbox.setDecimals(0)
+            self.size_spinbox.setValue(float(new_target_bytes))
 
         self._syncing_size = False
         self._update_slider_label()
@@ -418,9 +512,12 @@ class MainWindow(QMainWindow):
         val = self.size_spinbox.value()
         unit = self.unit_combo.currentText().upper()
         if unit == "MB":
-            return int(val * 1024 * 1024)
-        else:
-            return int(val * 1024)
+            target = int(round(val * 1024 * 1024))
+        elif unit == "KB":
+            target = int(round(val * 1024))
+        else:  # "B"
+            target = int(round(val))
+        return max(1, target)
 
     def _get_selected_mode(self) -> str:
         btn_id = self.mode_group.checkedId()
@@ -438,8 +535,9 @@ class MainWindow(QMainWindow):
             return
 
         target_bytes = self._calculate_target_bytes()
-        if target_bytes <= 0:
-            self.log_widget.append_log("ERROR", "Specified target size is invalid!")
+        if target_bytes < 1:
+            self.log_widget.append_log("ERROR", "Target size must be at least 1 Byte!")
+            QMessageBox.warning(self, "Invalid Target Size", "Target size must be at least 1 Byte.")
             return
 
         mode = self._get_selected_mode()
