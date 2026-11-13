@@ -78,6 +78,7 @@ class CompressionWorker(QThread):
         self.sig_progress.emit(pct, status)
 
     def run(self):
+        output_path: Optional[str] = None
         try:
             if not os.path.isfile(self.input_path):
                 self._emit_log("ERROR", f"Source file not found: {self.input_path}")
@@ -127,6 +128,7 @@ class CompressionWorker(QThread):
                     mode=self.mode,
                 )
                 if self.is_cancelled():
+                    self._cleanup_partial_output(output_path)
                     self._emit_log("WARN", "Image processing was cancelled.")
                     self.sig_error.emit("Cancelled by user", 1)
                     return
@@ -147,12 +149,8 @@ class CompressionWorker(QThread):
                     max_fps=self.max_fps,
                 )
                 if self.is_cancelled():
+                    self._cleanup_partial_output(output_path)
                     self._emit_log("WARN", "Video processing was cancelled.")
-                    if os.path.exists(output_path):
-                        try:
-                            os.remove(output_path)
-                        except Exception:
-                            pass
                     self.sig_error.emit("Cancelled by user", 1)
                     return
 
@@ -164,10 +162,19 @@ class CompressionWorker(QThread):
                 self.sig_error.emit(err_msg, 415)
 
         except InterruptedError:
+            self._cleanup_partial_output(output_path)
             self._emit_log("WARN", "Operation was cancelled by user.")
             self.sig_error.emit("Operation cancelled", 130)
         except Exception as e:
+            self._cleanup_partial_output(output_path)
             tb = traceback.format_exc()
             err_msg = f"Unexpected error during processing: {str(e)}"
             self._emit_log("ERROR", f"{err_msg}\n{tb}")
             self.sig_error.emit(str(e), 500)
+
+    def _cleanup_partial_output(self, output_path: Optional[str]) -> None:
+        if output_path and os.path.exists(output_path):
+            try:
+                os.remove(output_path)
+            except Exception:
+                pass

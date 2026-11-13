@@ -5,6 +5,7 @@ English localization throughout the entire application.
 """
 
 import os
+import re
 import sys
 import subprocess
 from typing import Optional, Dict, Any
@@ -123,6 +124,7 @@ class MainWindow(QMainWindow):
 
         # Quick Preset Buttons
         target_row.addWidget(QLabel("Presets:"))
+        self._preset_buttons = []
         presets = [
             ("8 MB", 8.0, "MB"),
             ("15 MB", 15.0, "MB"),
@@ -135,6 +137,7 @@ class MainWindow(QMainWindow):
             btn.setObjectName("presetButton")
             btn.clicked.connect(lambda checked, v=val, u=unit: self._apply_preset(v, u))
             target_row.addWidget(btn)
+            self._preset_buttons.append(btn)
 
         target_row.addStretch()
         settings_layout.addLayout(target_row)
@@ -402,23 +405,38 @@ class MainWindow(QMainWindow):
             self.size_spinbox.setDecimals(2)
             self.size_spinbox.setSingleStep(0.1)
 
+    def _bytes_from_value(self, val: float, unit: str) -> int:
+        unit = unit.upper()
+        if unit == "MB":
+            target = int(round(val * 1024 * 1024))
+        elif unit == "KB":
+            target = int(round(val * 1024))
+        else:  # "B"
+            target = int(round(val))
+        return max(1, target)
+
+    def _set_spinbox_from_bytes(self, target_bytes: int, unit: str) -> None:
+        unit = unit.upper()
+        if unit == "MB":
+            val = target_bytes / (1024.0 * 1024.0)
+            decimals = 4 if val < 0.01 else 2
+            self.size_spinbox.setDecimals(decimals)
+            self.size_spinbox.setValue(round(val, decimals))
+        elif unit == "KB":
+            val = target_bytes / 1024.0
+            decimals = 3 if val < 0.1 else 2
+            self.size_spinbox.setDecimals(decimals)
+            self.size_spinbox.setValue(round(val, decimals))
+        else:  # "B"
+            self.size_spinbox.setDecimals(0)
+            self.size_spinbox.setValue(float(target_bytes))
+
     def _on_slider_changed(self, slider_val: int):
         if self._syncing_size:
             return
         self._syncing_size = True
         target_bytes = self._slider_to_bytes(slider_val)
-        unit = self.unit_combo.currentText().upper()
-        if unit == "MB":
-            val = target_bytes / (1024.0 * 1024.0)
-            self.size_spinbox.setDecimals(4 if val < 0.01 else 2)
-            self.size_spinbox.setValue(round(val, 4 if val < 0.01 else 2))
-        elif unit == "KB":
-            val = target_bytes / 1024.0
-            self.size_spinbox.setDecimals(3 if val < 0.1 else 2)
-            self.size_spinbox.setValue(round(val, 3 if val < 0.1 else 2))
-        else:  # "B"
-            self.size_spinbox.setDecimals(0)
-            self.size_spinbox.setValue(float(target_bytes))
+        self._set_spinbox_from_bytes(target_bytes, self.unit_combo.currentText())
         self._update_slider_label()
         self._syncing_size = False
 
@@ -426,16 +444,8 @@ class MainWindow(QMainWindow):
         if self._syncing_size:
             return
         self._syncing_size = True
-        unit = self.unit_combo.currentText().upper()
-        if unit == "MB":
-            target_bytes = int(round(val * 1024 * 1024))
-        elif unit == "KB":
-            target_bytes = int(round(val * 1024))
-        else:  # "B"
-            target_bytes = int(round(val))
-        target_bytes = max(1, target_bytes)
-        slider_val = self._bytes_to_slider(target_bytes)
-        self.size_slider.setValue(slider_val)
+        target_bytes = self._bytes_from_value(val, self.unit_combo.currentText())
+        self.size_slider.setValue(self._bytes_to_slider(target_bytes))
         self._update_slider_label()
         self._syncing_size = False
 
@@ -446,17 +456,7 @@ class MainWindow(QMainWindow):
         unit = new_unit.upper()
         self._apply_unit_settings(unit)
         target_bytes = self._slider_to_bytes(self.size_slider.value())
-        if unit == "MB":
-            val = target_bytes / (1024.0 * 1024.0)
-            self.size_spinbox.setDecimals(4 if val < 0.01 else 2)
-            self.size_spinbox.setValue(round(val, 4 if val < 0.01 else 2))
-        elif unit == "KB":
-            val = target_bytes / 1024.0
-            self.size_spinbox.setDecimals(3 if val < 0.1 else 2)
-            self.size_spinbox.setValue(round(val, 3 if val < 0.1 else 2))
-        else:  # "B"
-            self.size_spinbox.setDecimals(0)
-            self.size_spinbox.setValue(float(target_bytes))
+        self._set_spinbox_from_bytes(target_bytes, unit)
         self._update_slider_label()
         self._syncing_size = False
 
@@ -474,15 +474,8 @@ class MainWindow(QMainWindow):
         self.unit_combo.setCurrentText(unit)
         self._apply_unit_settings(unit)
         self.size_spinbox.setValue(val)
-        if unit == "MB":
-            target_bytes = int(val * 1024 * 1024)
-        elif unit == "KB":
-            target_bytes = int(val * 1024)
-        else:
-            target_bytes = int(val)
-        target_bytes = max(1, target_bytes)
-        slider_val = self._bytes_to_slider(target_bytes)
-        self.size_slider.setValue(slider_val)
+        target_bytes = self._bytes_from_value(val, unit)
+        self.size_slider.setValue(self._bytes_to_slider(target_bytes))
         self._syncing_size = False
         self._update_slider_label()
         self.log_widget.append_log("INFO", f"Preset selected: {val:.1f} {unit}")
@@ -514,20 +507,11 @@ class MainWindow(QMainWindow):
             self.fps_combo.blockSignals(False)
 
     def _parse_fps_value(self, text: str) -> Optional[float]:
-        if "60" in text:
-            return 60.0
-        elif "50" in text:
-            return 50.0
-        elif "30" in text:
-            return 30.0
-        elif "25" in text:
-            return 25.0
-        elif "24" in text:
-            return 24.0
-        elif "15" in text:
-            return 15.0
-        elif text == "Custom...":
+        if text == "Custom...":
             return float(self.fps_spinbox.value())
+        match = re.match(r"(\d+(?:\.\d+)?)\s*FPS", text.strip(), re.IGNORECASE)
+        if match:
+            return float(match.group(1))
         return None
 
     def _get_selected_max_fps(self) -> Optional[float]:
@@ -561,17 +545,7 @@ class MainWindow(QMainWindow):
 
         unit = self.unit_combo.currentText().upper()
         self._apply_unit_settings(unit)
-        if unit == "MB":
-            val = new_target_bytes / (1024.0 * 1024.0)
-            self.size_spinbox.setDecimals(4 if val < 0.01 else 2)
-            self.size_spinbox.setValue(round(val, 4 if val < 0.01 else 2))
-        elif unit == "KB":
-            val = new_target_bytes / 1024.0
-            self.size_spinbox.setDecimals(3 if val < 0.1 else 2)
-            self.size_spinbox.setValue(round(val, 3 if val < 0.1 else 2))
-        else:  # "B"
-            self.size_spinbox.setDecimals(0)
-            self.size_spinbox.setValue(float(new_target_bytes))
+        self._set_spinbox_from_bytes(new_target_bytes, unit)
 
         self._syncing_size = False
         self._update_slider_label()
@@ -598,15 +572,7 @@ class MainWindow(QMainWindow):
             self.log_widget.append_log("INFO", f"Image details: Resolution {res}, format {meta.get('format', '')}")
 
     def _calculate_target_bytes(self) -> int:
-        val = self.size_spinbox.value()
-        unit = self.unit_combo.currentText().upper()
-        if unit == "MB":
-            target = int(round(val * 1024 * 1024))
-        elif unit == "KB":
-            target = int(round(val * 1024))
-        else:  # "B"
-            target = int(round(val))
-        return max(1, target)
+        return self._bytes_from_value(self.size_spinbox.value(), self.unit_combo.currentText())
 
     def _get_selected_mode(self) -> str:
         btn_id = self.mode_group.checkedId()
@@ -639,6 +605,7 @@ class MainWindow(QMainWindow):
             return
 
         # Prepare UI for processing state
+        self._set_settings_enabled(False)
         self.start_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
         self.open_file_btn.setEnabled(False)
@@ -719,7 +686,7 @@ class MainWindow(QMainWindow):
             self.log_widget.append_log("INFO", f"Opening destination folder: {folder}")
             if sys.platform == "win32":
                 # Opens folder and selects the file in Windows Explorer
-                subprocess.Popen(f'explorer /select,"{abs_file}"')
+                subprocess.Popen(["explorer", f"/select,{abs_file}"])
             else:
                 QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
         except Exception as e:
@@ -754,7 +721,24 @@ class MainWindow(QMainWindow):
         self.progress_label.setText(f"Error (code {error_code})")
         self.log_widget.append_log("ERROR", f"Operation failed with code {error_code}: {error_message}")
 
+    def _set_settings_enabled(self, enabled: bool):
+        self.size_spinbox.setEnabled(enabled)
+        self.unit_combo.setEnabled(enabled)
+        self.size_slider.setEnabled(enabled)
+        for btn in self._preset_buttons:
+            btn.setEnabled(enabled)
+        for btn in self.mode_group.buttons():
+            btn.setEnabled(enabled)
+        for btn in self.dest_group.buttons():
+            btn.setEnabled(enabled)
+        if enabled:
+            self._toggle_dest_mode()
+        else:
+            self.dest_path_edit.setEnabled(False)
+            self.browse_dest_btn.setEnabled(False)
+
     def _reset_ui_state(self):
+        self._set_settings_enabled(True)
         self.start_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         self.drop_area.setEnabled(True)
@@ -780,7 +764,9 @@ class MainWindow(QMainWindow):
             )
             if reply == QMessageBox.StandardButton.Yes:
                 self.worker.cancel()
-                self.worker.wait(3000)
+                if not self.worker.wait(3000):
+                    self.worker.terminate()
+                    self.worker.wait(1000)
                 event.accept()
             else:
                 event.ignore()

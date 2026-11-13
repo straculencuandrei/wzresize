@@ -8,12 +8,12 @@ import os
 import re
 import subprocess
 import tempfile
-import time
 from typing import Callable, Optional, Dict, Any, Tuple
 from core.probe import probe_file, get_ffmpeg_executable, format_size, format_duration
 
 # Windows flag to suppress cmd window popup
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+_TIME_PATTERN = re.compile(r"time=(\d+):(\d+):(\d+\.\d+)")
 
 
 class VideoCompressor:
@@ -35,9 +35,10 @@ class VideoCompressor:
 
     def cancel(self):
         """Terminates active FFmpeg process if running."""
-        if self.active_process and self.active_process.poll() is None:
+        proc = self.active_process
+        if proc and proc.poll() is None:
             try:
-                self.active_process.kill()
+                proc.kill()
             except Exception:
                 pass
 
@@ -57,38 +58,35 @@ class VideoCompressor:
             return None, "Preserve original resolution (mode setting)"
 
         fps_val = fps if fps > 5 else 30.0
-        # Calculate Bits Per Pixel (bpp)
-        bpp = (video_bitrate_kbps * 1000.0) / (orig_w * orig_h * fps_val)
+        # Normalize bitrate to a 30 fps baseline so lower FPS caps retain higher resolution
+        effective_bitrate = video_bitrate_kbps * (30.0 / fps_val)
 
-        # Standard step thresholds
         if mode == "scale_res":
-            # Aggressive downscaling to maintain high bpp (>= 0.10)
-            if orig_h > 1080 and video_bitrate_kbps < 3500:
-                return 1080, "Scale priority: 4K/2K -> 1080p for consistent bitrate"
-            elif orig_h >= 1080 and video_bitrate_kbps < 2000:
-                return 720, "Scale priority: 1080p -> 720p for high clarity"
-            elif orig_h >= 720 and video_bitrate_kbps < 1000:
-                return 480, "Scale priority: 720p -> 480p to prevent compression artifacts"
-            elif orig_h >= 480 and video_bitrate_kbps < 450:
-                return 360, "Scale priority: 480p -> 360p"
-            elif orig_h >= 360 and video_bitrate_kbps < 200:
-                return 240, "Scale priority: 360p -> 240p"
-            return None, "Resolution adequate for allocated bitrate"
+            # Aggressive downscaling to maintain high bits-per-pixel
+            tiers = [
+                (240, 200, "Scale priority: -> 240p"),
+                (360, 450, "Scale priority: -> 360p"),
+                (480, 1000, "Scale priority: -> 480p to prevent compression artifacts"),
+                (720, 2000, "Scale priority: -> 720p for high clarity"),
+                (1080, 3500, "Scale priority: -> 1080p for consistent bitrate"),
+            ]
+            default_msg = "Resolution adequate for allocated bitrate"
+        else:
+            # Mode == 'balanced': downscale only when bpp falls below comfortable thresholds
+            tiers = [
+                (240, 160, f"Critical bitrate ({video_bitrate_kbps:.0f} kbps): Downscaling to 240p"),
+                (360, 320, f"Critical bitrate ({video_bitrate_kbps:.0f} kbps): Downscaling to 360p"),
+                (480, 750, f"Critical bitrate ({video_bitrate_kbps:.0f} kbps): Downscaling to 480p for stability"),
+                (720, 1500, f"Low bitrate ({video_bitrate_kbps:.0f} kbps): Downscaling to 720p for visual balance"),
+                (1080, 2800, f"Low bitrate ({video_bitrate_kbps:.0f} kbps): Downscaling to 1080p to avoid artifacts"),
+            ]
+            default_msg = "Original resolution maintained (sufficient bpp)"
 
-        # Mode == 'balanced'
-        # Downscale only when bpp falls below acceptable compression limits (< ~0.055)
-        if orig_h > 1080 and video_bitrate_kbps < 2800:
-            return 1080, f"Low bitrate ({video_bitrate_kbps:.0f} kbps): Downscaling to 1080p to avoid artifacts"
-        elif orig_h >= 1080 and video_bitrate_kbps < 1500:
-            return 720, f"Low bitrate ({video_bitrate_kbps:.0f} kbps): Downscaling to 720p for visual balance"
-        elif orig_h >= 720 and video_bitrate_kbps < 750:
-            return 480, f"Critical bitrate ({video_bitrate_kbps:.0f} kbps): Downscaling to 480p for stability"
-        elif orig_h >= 480 and video_bitrate_kbps < 320:
-            return 360, f"Critical bitrate ({video_bitrate_kbps:.0f} kbps): Downscaling to 360p"
-        elif orig_h >= 360 and video_bitrate_kbps < 160:
-            return 240, f"Critical bitrate ({video_bitrate_kbps:.0f} kbps): Downscaling to 240p"
+        for target_h, min_kbps, msg in tiers:
+            if orig_h > target_h and effective_bitrate < min_kbps:
+                return target_h, msg
 
-        return None, "Original resolution maintained (sufficient bpp)"
+        return None, default_msg
 
     def _run_pass(
         self,
@@ -100,56 +98,55 @@ class VideoCompressor:
         """
         Executes an FFmpeg pass with real-time stderr progress parsing.
         """
-        ffmpeg_bin = get_ffmpeg_executable()
-        self.active_process = subprocess.Popen(
+        proc = subprocess.Popen(
             cmd,
-            stdout=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             creationflags=CREATE_NO_WINDOW,
             text=True,
             encoding="utf-8",
             errors="replace"
         )
+        self.active_process = proc
 
         stderr_buffer = []
-        time_pattern = re.compile(r"time=(\d+):(\d+):(\d+\.\d+)")
         p_start, p_end = progress_range
         last_pct = p_start
 
-        while True:
-            if self.is_cancelled():
-                self.cancel()
-                raise InterruptedError("Operation was cancelled by user.")
-
-            line = self.active_process.stderr.readline()
-            if not line and self.active_process.poll() is not None:
-                break
-
-            if line:
-                stderr_buffer.append(line)
-                match = time_pattern.search(line)
-                if match and duration > 0:
-                    h, m, s = match.groups()
-                    current_sec = int(h) * 3600 + int(m) * 60 + float(s)
-                    ratio = min(1.0, current_sec / duration)
-                    current_pct = int(p_start + ratio * (p_end - p_start))
-                    if current_pct > last_pct:
-                        last_pct = current_pct
-                        self.progress(
-                            current_pct,
-                            f"Pass {pass_num}/2: {format_duration(current_sec)} / {format_duration(duration)} ({current_pct}%)"
-                        )
-
-        returncode = self.active_process.wait()
-        full_stderr = "".join(stderr_buffer)
         try:
-            if self.active_process.stdout:
-                self.active_process.stdout.close()
-            if self.active_process.stderr:
-                self.active_process.stderr.close()
-        except Exception:
-            pass
-        return returncode, full_stderr
+            while True:
+                if self.is_cancelled():
+                    self.cancel()
+                    raise InterruptedError("Operation was cancelled by user.")
+
+                line = proc.stderr.readline()
+                if not line and proc.poll() is not None:
+                    break
+
+                if line:
+                    stderr_buffer.append(line)
+                    match = _TIME_PATTERN.search(line)
+                    if match and duration > 0:
+                        h, m, s = match.groups()
+                        current_sec = int(h) * 3600 + int(m) * 60 + float(s)
+                        ratio = min(1.0, current_sec / duration)
+                        current_pct = int(p_start + ratio * (p_end - p_start))
+                        if current_pct > last_pct:
+                            last_pct = current_pct
+                            self.progress(
+                                current_pct,
+                                f"Pass {pass_num}/2: {format_duration(current_sec)} / {format_duration(duration)} ({current_pct}%)"
+                            )
+
+            returncode = proc.wait()
+            return returncode, "".join(stderr_buffer)
+        finally:
+            self.active_process = None
+            try:
+                if proc.stderr:
+                    proc.stderr.close()
+            except Exception:
+                pass
 
     def compress(
         self,
@@ -233,11 +230,12 @@ class VideoCompressor:
             # Ensure audio does not take more than 35% of total budget
             max_audio_share = total_bitrate_kbps * 0.35
             if audio_bitrate_kbps > max_audio_share:
-                audio_bitrate_kbps = max(24.0, max_audio_share)
+                audio_floor = 12.0 if total_bitrate_kbps < 70 else 24.0
+                audio_bitrate_kbps = max(audio_floor, min(audio_bitrate_kbps, max_audio_share))
         else:
             audio_bitrate_kbps = 0.0
 
-        video_bitrate_kbps = max(20.0, total_bitrate_kbps - audio_bitrate_kbps)
+        video_bitrate_kbps = max(10.0, total_bitrate_kbps - audio_bitrate_kbps)
 
         self.log(
             "INFO",
@@ -249,24 +247,33 @@ class VideoCompressor:
         target_h, reason = self._determine_target_resolution(orig_w, orig_h, effective_fps, video_bitrate_kbps, mode)
         self.log("INFO", f"Resolution decision: {reason}")
 
-        video_filters = []
-        if fps_filter_applied:
-            video_filters.append(f"fps=fps={max_fps}")
-
-        if target_h and orig_h > 0 and target_h < orig_h:
-            # Scale video preserving aspect ratio, ensuring width is divisible by 2 for H.264
-            video_filters.append(f"scale=-2:{target_h}")
-
-        vf_arg = ["-vf", ",".join(video_filters)] if video_filters else []
-
         # Determine Codecs based on output container
         ext = os.path.splitext(output_path)[1].lower()
         if ext == ".webm":
             v_codec = "libvpx-vp9"
             a_codec = "libopus"
+            pass1_codec_args = ["-deadline", "good", "-cpu-used", "4"]
+            pass2_codec_args = ["-deadline", "good", "-cpu-used", "2"]
         else:
             v_codec = "libx264"
             a_codec = "aac"
+            pass1_codec_args = ["-preset", "medium", "-pix_fmt", "yuv420p"]
+            pass2_codec_args = ["-preset", "medium", "-pix_fmt", "yuv420p"]
+            if ext in (".mp4", ".mov", ".m4v"):
+                pass2_codec_args.extend(["-movflags", "+faststart"])
+
+        video_filters = []
+        if fps_filter_applied:
+            video_filters.append(f"fps=fps={max_fps}")
+
+        if target_h and orig_h > 0 and target_h < orig_h:
+            # Scale video preserving aspect ratio, ensuring width is divisible by 2 for H.264/yuv420p
+            video_filters.append(f"scale=-2:{target_h}")
+        elif v_codec == "libx264" and (orig_w % 2 != 0 or orig_h % 2 != 0):
+            video_filters.append("scale=trunc(iw/2)*2:trunc(ih/2)*2")
+
+        vf_arg = ["-vf", ",".join(video_filters)] if video_filters else []
+        v_bitrate_arg = f"{max(1, int(video_bitrate_kbps))}k"
 
         ffmpeg_bin = get_ffmpeg_executable()
         temp_dir = tempfile.mkdtemp(prefix="wz_ffmpeg_")
@@ -286,10 +293,10 @@ class VideoCompressor:
                 "-hide_banner",
                 "-i", input_path,
                 "-c:v", v_codec,
-                "-b:v", f"{int(video_bitrate_kbps)}k",
+                "-b:v", v_bitrate_arg,
                 "-pass", "1",
                 "-passlogfile", passlog_prefix,
-                "-preset", "medium",
+                *pass1_codec_args,
                 "-an",
                 *vf_arg,
                 "-f", "null",
@@ -311,15 +318,17 @@ class VideoCompressor:
                 "-hide_banner",
                 "-i", input_path,
                 "-c:v", v_codec,
-                "-b:v", f"{int(video_bitrate_kbps)}k",
+                "-b:v", v_bitrate_arg,
                 "-pass", "2",
                 "-passlogfile", passlog_prefix,
-                "-preset", "medium",
+                *pass2_codec_args,
                 *vf_arg
             ]
 
             if has_audio and audio_bitrate_kbps > 0:
-                cmd_pass2.extend(["-c:a", a_codec, "-b:a", f"{int(audio_bitrate_kbps)}k"])
+                cmd_pass2.extend(["-c:a", a_codec, "-b:a", f"{max(8, int(audio_bitrate_kbps))}k"])
+                if audio_bitrate_kbps <= 48:
+                    cmd_pass2.extend(["-ac", "1"])
             else:
                 cmd_pass2.append("-an")
 
@@ -329,6 +338,14 @@ class VideoCompressor:
             if code2 != 0:
                 self.log("ERROR", f"Error during Pass 2 (code {code2}):\n{err2[-400:]}")
                 raise RuntimeError(f"FFmpeg Pass 2 failed with code {code2}. Details: {err2[-200:]}")
+
+        except BaseException:
+            if os.path.exists(output_path):
+                try:
+                    os.remove(output_path)
+                except Exception:
+                    pass
+            raise
 
         finally:
             # Clean up passlog files and temp directory

@@ -11,6 +11,35 @@ from typing import Callable, Optional, Tuple, Dict, Any
 from PIL import Image, ImageOps
 
 
+_LOSSY_QUALITY_FORMATS = {"JPEG", "JPG", "WEBP"}
+
+
+def _prepare_rgb_for_jpeg(img: Image.Image) -> Image.Image:
+    """Converts any image mode to RGB (compositing alpha onto white) once."""
+    if img.mode == "RGB":
+        return img
+    if img.mode in ("RGBA", "LA", "P"):
+        if img.mode == "P":
+            img = img.convert("RGBA")
+        rgb_img = Image.new("RGB", img.size, (255, 255, 255))
+        if "A" in img.mode:
+            rgb_img.paste(img, mask=img.split()[-1])
+        else:
+            rgb_img.paste(img)
+        return rgb_img
+    return img.convert("RGB")
+
+
+def _compute_downscaled_dims(current_w: int, current_h: int, ratio: float, min_dim: int = 16) -> Tuple[int, int]:
+    """Computes downscaled dimensions clamped to min_dim while ensuring shrinkage when possible."""
+    new_w = max(min_dim, int(current_w * ratio))
+    new_h = max(min_dim, int(current_h * ratio))
+    if new_w == current_w and new_h == current_h:
+        new_w = max(min_dim, int(current_w * 0.8))
+        new_h = max(min_dim, int(current_h * 0.8))
+    return new_w, new_h
+
+
 class ImageCompressor:
     def __init__(
         self,
@@ -33,20 +62,8 @@ class ImageCompressor:
         fmt_upper = fmt.upper()
 
         if fmt_upper in ("JPEG", "JPG"):
-            # Ensure RGB mode for JPEG (convert RGBA to RGB on white background)
-            if img.mode in ("RGBA", "LA", "P"):
-                rgb_img = Image.new("RGB", img.size, (255, 255, 255))
-                if img.mode == "P":
-                    img = img.convert("RGBA")
-                if "A" in img.mode:
-                    rgb_img.paste(img, mask=img.split()[-1])
-                else:
-                    rgb_img.paste(img)
-                img = rgb_img
-            elif img.mode != "RGB":
-                img = img.convert("RGB")
-
-            img.save(
+            rgb_img = _prepare_rgb_for_jpeg(img)
+            rgb_img.save(
                 buf,
                 format="JPEG",
                 quality=quality,
@@ -61,7 +78,6 @@ class ImageCompressor:
                 method=6,
             )
         elif fmt_upper == "PNG":
-            # For PNG, quality parameter in Pillow is typically ignored unless quantizing
             img.save(
                 buf,
                 format="PNG",
@@ -69,7 +85,6 @@ class ImageCompressor:
                 compress_level=9,
             )
         else:
-            # Fallback format
             img.save(buf, format=fmt_upper, optimize=optimize)
 
         return buf.getvalue()
@@ -104,9 +119,8 @@ class ImageCompressor:
 
         # Open image and correct EXIF orientation if present
         with Image.open(input_path) as raw_img:
-            img = ImageOps.exif_transpose(raw_img)
-            # Create a copy in memory so original file handle is released
-            img = img.copy()
+            transposed = ImageOps.exif_transpose(raw_img)
+            img = raw_img.copy() if transposed is raw_img else transposed
 
         orig_w, orig_h = img.size
         ext = os.path.splitext(output_path)[1].lower()
@@ -117,7 +131,11 @@ class ImageCompressor:
         elif ext == ".png":
             fmt = "PNG"
         else:
-            fmt = img.format or "JPEG"
+            fmt = (img.format or "JPEG").upper()
+
+        # Pre-convert to RGB once for JPEG so binary-search probes don't repeat alpha compositing
+        if fmt == "JPEG" and img.mode != "RGB":
+            img = _prepare_rgb_for_jpeg(img)
 
         self.log("INFO", f"Source resolution: {orig_w}x{orig_h} | Target format: {fmt}")
         self.progress(10, "Initializing parameter optimization...")
@@ -126,7 +144,12 @@ class ImageCompressor:
         current_w, current_h = orig_w, orig_h
         best_data: Optional[bytes] = None
         best_quality = 95
-        best_scale = 1.0
+        smallest_candidate: Optional[Tuple[bytes, Tuple[int, int], int]] = None
+
+        def _record_candidate(data: bytes, dims: Tuple[int, int], q: int) -> None:
+            nonlocal smallest_candidate
+            if smallest_candidate is None or len(data) < len(smallest_candidate[0]):
+                smallest_candidate = (data, dims, q)
 
         # Parameter boundaries based on mode
         if mode == "preserve_res":
@@ -139,6 +162,7 @@ class ImageCompressor:
             min_quality = 30
             allow_downscale = True
 
+        is_lossy_quality = fmt in _LOSSY_QUALITY_FORMATS
         iteration = 0
         max_iterations = 25
 
@@ -150,117 +174,131 @@ class ImageCompressor:
             progress_val = min(90, 15 + int((iteration / max_iterations) * 75))
             self.progress(progress_val, f"Iteration {iteration}: Testing at {current_w}x{current_h}...")
 
-            # Special case for PNG:
-            if fmt == "PNG":
-                # First try standard PNG
+            if not is_lossy_quality:
+                # Lossless / non-quality formats (PNG, BMP, TIFF, TGA, etc.)
                 test_bytes = self._test_save(current_img, fmt, quality=95)
+                _record_candidate(test_bytes, (current_w, current_h), 95)
                 if len(test_bytes) <= target_bytes:
                     best_data = test_bytes
                     break
 
-                # If still too large and RGBA/RGB, try quantization (palette 256 colors)
-                if mode != "preserve_res" or allow_downscale:
+                ref_bytes_len = len(test_bytes)
+
+                # For PNG, try adaptive/fastoctree 256-color palette quantization (preserves resolution)
+                if fmt == "PNG" and current_img.mode != "P":
                     try:
-                        quant_img = current_img.convert("P", palette=Image.Palette.ADAPTIVE, colors=256)
+                        if current_img.mode == "RGBA":
+                            quant_img = current_img.quantize(colors=256, method=Image.Quantize.FASTOCTREE)
+                        else:
+                            quant_img = current_img.convert("P", palette=Image.Palette.ADAPTIVE, colors=256)
                         buf_q = io.BytesIO()
-                        quant_img.save(buf_q, format="PNG", optimize=True)
+                        quant_img.save(buf_q, format="PNG", optimize=True, compress_level=9)
                         q_data = buf_q.getvalue()
+                        _record_candidate(q_data, (current_w, current_h), 95)
                         if len(q_data) <= target_bytes:
                             best_data = q_data
-                            current_img = quant_img
                             break
+                        ref_bytes_len = min(ref_bytes_len, len(q_data))
                     except Exception:
                         pass
 
-                # If PNG cannot hit target and downscaling is not allowed:
                 if not allow_downscale:
-                    best_data = test_bytes
-                    self.log("WARN", "PNG format is lossless. Without resolution downscaling, target size cannot be reached.")
+                    best_data = smallest_candidate[0]
+                    self.log("WARN", f"{fmt} format is lossless. Without resolution downscaling, target size cannot be reached.")
                     break
 
-                # Calculate downscale factor for PNG
-                ratio = math.sqrt(target_bytes / len(test_bytes)) * 0.92
-                ratio = max(0.2, min(0.92, ratio))
-                new_w = max(16, int(current_w * ratio))
-                new_h = max(16, int(current_h * ratio))
-
+                ratio = max(0.2, min(0.92, math.sqrt(target_bytes / ref_bytes_len) * 0.92))
+                new_w, new_h = _compute_downscaled_dims(current_w, current_h, ratio)
                 if new_w == current_w and new_h == current_h:
-                    new_w = max(16, int(current_w * 0.85))
-                    new_h = max(16, int(current_h * 0.85))
+                    self.log("WARN", f"Reached minimum resolution floor ({current_w}x{current_h}); stopping downscale.")
+                    break
 
-                self.log("INFO", f"Lanczos downscaling PNG: {current_w}x{current_h} -> {new_w}x{new_h}")
+                self.log("INFO", f"Lanczos downscaling {fmt}: {current_w}x{current_h} -> {new_w}x{new_h}")
                 current_img = current_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
                 current_w, current_h = new_w, new_h
                 continue
 
-            # Binary search on quality for lossy formats (JPEG, WEBP)
-            low_q = min_quality
+            # Lossy formats (JPEG, WEBP): test min_quality first if a big reduction is needed
             high_q = 95
-            found_quality_data: Optional[bytes] = None
-            found_q = None
+            low_q = min_quality
+            test_high_first = (not allow_downscale) or (iteration == 1 and orig_size <= target_bytes * 2)
 
-            # Test high quality first
-            high_bytes = self._test_save(current_img, fmt, quality=high_q)
-            if len(high_bytes) <= target_bytes:
-                best_data = high_bytes
-                best_quality = high_q
-                break
+            if test_high_first:
+                high_bytes = self._test_save(current_img, fmt, quality=high_q)
+                _record_candidate(high_bytes, (current_w, current_h), high_q)
+                if len(high_bytes) <= target_bytes:
+                    best_data = high_bytes
+                    best_quality = high_q
+                    break
 
-            # Test min quality to check feasibility at current resolution
-            low_bytes = self._test_save(current_img, fmt, quality=low_q)
-            if len(low_bytes) <= target_bytes:
-                # Target is reachable within [low_q, high_q] via binary search!
+                low_bytes = self._test_save(current_img, fmt, quality=low_q)
+                _record_candidate(low_bytes, (current_w, current_h), low_q)
+                low_fits = len(low_bytes) <= target_bytes
+            else:
+                low_bytes = self._test_save(current_img, fmt, quality=low_q)
+                _record_candidate(low_bytes, (current_w, current_h), low_q)
+                low_fits = len(low_bytes) <= target_bytes
+                if low_fits and high_q > low_q:
+                    high_bytes = self._test_save(current_img, fmt, quality=high_q)
+                    _record_candidate(high_bytes, (current_w, current_h), high_q)
+                    if len(high_bytes) <= target_bytes:
+                        best_data = high_bytes
+                        best_quality = high_q
+                        break
+
+            if low_fits:
+                # Target is reachable within [low_q, high_q - 1] via binary search
                 found_quality_data = low_bytes
                 found_q = low_q
+                search_low = low_q + 1
+                search_high = high_q - 1
 
-                while low_q <= high_q:
-                    mid_q = (low_q + high_q) // 2
+                while search_low <= search_high:
+                    if self.is_cancelled():
+                        raise InterruptedError("Operation was cancelled by user.")
+                    mid_q = (search_low + search_high) // 2
                     mid_bytes = self._test_save(current_img, fmt, quality=mid_q)
-                    mid_len = len(mid_bytes)
+                    _record_candidate(mid_bytes, (current_w, current_h), mid_q)
 
-                    if mid_len <= target_bytes:
+                    if len(mid_bytes) <= target_bytes:
                         found_quality_data = mid_bytes
                         found_q = mid_q
-                        # Try higher quality to get best visual fidelity
-                        low_q = mid_q + 1
+                        search_low = mid_q + 1
                     else:
-                        # Too large, search lower quality
-                        high_q = mid_q - 1
+                        search_high = mid_q - 1
 
                 best_data = found_quality_data
                 best_quality = found_q
                 self.log("INFO", f"Optimal parameters found: Quality {best_quality}% at {current_w}x{current_h} ({len(best_data) / 1024:.1f} KB)")
                 break
-            else:
-                # Even min_quality exceeds target size!
-                if not allow_downscale:
-                    # User requested 'preserve_res', so we take the lowest possible quality
-                    best_data = low_bytes
-                    best_quality = low_q
-                    self.log("WARN", f"At original resolution, minimum quality ({min_quality}%) yields {len(low_bytes)/1024:.1f} KB (exceeds target).")
-                    break
 
-                # Downscale resolution
-                current_bytes_len = len(low_bytes)
-                ratio = math.sqrt(target_bytes / current_bytes_len) * 0.92
-                ratio = max(0.15, min(0.90, ratio))
+            # Even min_quality exceeds target size
+            if not allow_downscale:
+                best_data = low_bytes
+                best_quality = low_q
+                self.log("WARN", f"At original resolution, minimum quality ({min_quality}%) yields {len(low_bytes)/1024:.1f} KB (exceeds target).")
+                break
 
-                new_w = max(16, int(current_w * ratio))
-                new_h = max(16, int(current_h * ratio))
+            current_bytes_len = len(low_bytes)
+            ratio = max(0.15, min(0.90, math.sqrt(target_bytes / current_bytes_len) * 0.92))
+            new_w, new_h = _compute_downscaled_dims(current_w, current_h, ratio)
 
-                if new_w == current_w and new_h == current_h:
-                    new_w = max(16, int(current_w * 0.8))
-                    new_h = max(16, int(current_h * 0.8))
+            if new_w == current_w and new_h == current_h:
+                self.log("WARN", f"Reached minimum resolution floor ({current_w}x{current_h}); target size ({target_bytes} B) cannot be reached.")
+                break
 
-                self.log("INFO", f"Downscaling resolution (Lanczos): {current_w}x{current_h} -> {new_w}x{new_h} (quality {min_quality}%)")
-                current_img = current_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-                current_w, current_h = new_w, new_h
+            self.log("INFO", f"Downscaling resolution (Lanczos): {current_w}x{current_h} -> {new_w}x{new_h} (quality {min_quality}%)")
+            current_img = current_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+            current_w, current_h = new_w, new_h
 
-        # Fallback if no iteration set best_data
+        # Fallback to smallest candidate produced if target could not be met
         if best_data is None:
-            best_data = self._test_save(current_img, fmt, quality=min_quality)
+            if smallest_candidate is not None:
+                best_data, (current_w, current_h), best_quality = smallest_candidate
+            else:
+                best_data = self._test_save(current_img, fmt, quality=min_quality)
 
-        # Write to destination file atomically
+        # Write to destination file
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
         with open(output_path, "wb") as f:
             f.write(best_data)

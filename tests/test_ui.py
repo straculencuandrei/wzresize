@@ -123,6 +123,15 @@ class TestMainWindowUI(unittest.TestCase):
         self.assertEqual(self.win.open_file_btn.text(), "Open Compressed File")
         self.assertEqual(self.win.open_folder_btn.text(), "Open Folder")
 
+    def test_log_widget_compact_blocks_and_max_limit(self):
+        self.assertEqual(self.win.log_widget.console.document().maximumBlockCount(), 2000)
+        self.win.log_widget.clear_logs()
+        initial_blocks = self.win.log_widget.console.document().blockCount()
+        self.win.log_widget.append_log("INFO", "Line one")
+        self.win.log_widget.append_log("SUCCESS", "Line two")
+        # Each single-line append should add exactly 1 block (no extra blank lines)
+        self.assertEqual(self.win.log_widget.console.document().blockCount(), initial_blocks + 2)
+
 
 if __name__ == "__main__":
     unittest.main()

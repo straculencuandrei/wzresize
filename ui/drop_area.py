@@ -107,7 +107,8 @@ class DropAreaWidget(QFrame):
         return val
 
     def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls():
+        urls = event.mimeData().urls() if event.mimeData().hasUrls() else []
+        if any(u.isLocalFile() and os.path.isfile(u.toLocalFile()) for u in urls):
             event.acceptProposedAction()
             self.setProperty("dragActive", "true")
             self.style().unpolish(self)

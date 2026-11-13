@@ -145,6 +145,73 @@ class TestWZResizer(unittest.TestCase):
         self.assertAlmostEqual(meta["fps"], 15.0, delta=0.5)
         self.assertLessEqual(os.path.getsize(out_video_15fps), target_bytes)
 
+    def test_07_image_tiny_target_stops_at_floor_and_rgba_png(self):
+        # RGBA PNG with tiny target (1 byte) should hit 16x16 floor and terminate cleanly
+        in_png = os.path.join(self.test_dir, "rgba_sample.png")
+        out_png = os.path.join(self.test_dir, "rgba_floor.png")
+        img = Image.new("RGBA", (64, 64), (10, 120, 220, 180))
+        img.save(in_png)
+
+        iterations = []
+        compressor = ImageCompressor(progress_callback=lambda pct, msg: iterations.append(msg))
+        result = compressor.compress(in_png, out_png, target_bytes=1, mode="balanced")
+
+        self.assertTrue(result["success"])
+        self.assertTrue(os.path.exists(out_png))
+        self.assertEqual(result["dimensions"], (16, 16))
+        # Should stop promptly after hitting 16x16 instead of repeating 25 iterations
+        iter_msgs = [m for m in iterations if m.startswith("Iteration ")]
+        self.assertLessEqual(len(iter_msgs), 5)
+
+    def test_08_image_rgba_to_jpeg_and_bmp(self):
+        in_rgba = os.path.join(self.test_dir, "alpha_src.png")
+        out_jpg = os.path.join(self.test_dir, "alpha_out.jpg")
+        img = Image.new("RGBA", (320, 240), (200, 50, 50, 128))
+        img.save(in_rgba)
+
+        compressor = ImageCompressor()
+        res_jpg = compressor.compress(in_rgba, out_jpg, target_bytes=2000, mode="balanced")
+        self.assertTrue(res_jpg["success"])
+        self.assertLessEqual(res_jpg["final_size"], 2000)
+
+        in_bmp = os.path.join(self.test_dir, "sample.bmp")
+        out_bmp = os.path.join(self.test_dir, "sample_out.bmp")
+        Image.new("RGB", (200, 200), (40, 80, 120)).save(in_bmp)
+        res_bmp = compressor.compress(in_bmp, out_bmp, target_bytes=15000, mode="balanced")
+        self.assertTrue(res_bmp["success"])
+        self.assertLessEqual(res_bmp["final_size"], 15000)
+
+    def test_09_video_resolution_tiers_and_odd_dimensions(self):
+        compressor = VideoCompressor()
+        # 4K video at 300 kbps balanced should drop to 360p, not stop at 1080p
+        h_4k, _ = compressor._determine_target_resolution(3840, 2160, 30.0, 300.0, "balanced")
+        self.assertEqual(h_4k, 360)
+
+        # Lower FPS (15 fps) gives 2x bits per frame -> retains 720p at 600 kbps vs 480p at 30 fps
+        h_15fps, _ = compressor._determine_target_resolution(1280, 720, 15.0, 600.0, "balanced")
+        h_30fps, _ = compressor._determine_target_resolution(1280, 720, 30.0, 600.0, "balanced")
+        self.assertIsNone(h_15fps)
+        self.assertEqual(h_30fps, 480)
+
+        # Odd-dimension input video should encode cleanly to MP4 (yuv420p) without failing
+        odd_in = os.path.join(self.test_dir, "odd_vid.avi")
+        odd_out = os.path.join(self.test_dir, "odd_vid_out.mp4")
+        subprocess.run(
+            [
+                self.ffmpeg_bin, "-y",
+                "-f", "lavfi", "-i", "testsrc=duration=1:size=321x241:rate=25",
+                "-c:v", "ffv1", odd_in,
+            ],
+            capture_output=True,
+            check=True,
+        )
+        res = compressor.compress(odd_in, odd_out, target_bytes=100 * 1024, mode="preserve_res")
+        self.assertTrue(res["success"])
+        self.assertTrue(os.path.exists(odd_out))
+        out_meta = probe_file(odd_out)
+        self.assertEqual(out_meta["width"] % 2, 0)
+        self.assertEqual(out_meta["height"] % 2, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
